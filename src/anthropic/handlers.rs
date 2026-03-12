@@ -245,6 +245,7 @@ pub async fn post_messages(
     let kiro_request = KiroRequest {
         conversation_state: conversion_result.conversation_state,
         profile_arn: state.profile_arn.clone(),
+        inference_config: None,
     };
 
     let request_body = match serde_json::to_string(&kiro_request) {
@@ -729,6 +730,7 @@ pub async fn post_messages_cc(
     let kiro_request = KiroRequest {
         conversation_state: conversion_result.conversation_state,
         profile_arn: state.profile_arn.clone(),
+        inference_config: None,
     };
 
     let request_body = match serde_json::to_string(&kiro_request) {
