@@ -5,6 +5,7 @@ mod common;
 mod http_client;
 mod kiro;
 mod model;
+mod openai;
 pub mod token;
 
 use std::sync::Arc;
@@ -107,6 +108,7 @@ async fn main() {
         Some(kiro_provider),
         first_credentials.profile_arn.clone(),
     );
+    let openai_app = openai::create_router(anthropic::AppState::new(api_key.clone()));
 
     // 构建 Admin API 路由（如果配置了非空的 admin_api_key）
     // 安全检查：空字符串被视为未配置，防止空 key 绕过认证
@@ -131,11 +133,12 @@ async fn main() {
             tracing::info!("Admin API 已启用");
             tracing::info!("Admin UI 已启用: /admin");
             anthropic_app
+                .merge(openai_app)
                 .nest("/api/admin", admin_app)
                 .nest("/admin", admin_ui_app)
         }
     } else {
-        anthropic_app
+        anthropic_app.merge(openai_app)
     };
 
     // 启动服务器
@@ -144,6 +147,7 @@ async fn main() {
     tracing::info!("API Key: {}***", &api_key[..(api_key.len() / 2)]);
     tracing::info!("可用 API:");
     tracing::info!("  GET  /v1/models");
+    tracing::info!("  POST /v1/chat/completions");
     tracing::info!("  POST /v1/messages");
     tracing::info!("  POST /v1/messages/count_tokens");
     if admin_key_valid {

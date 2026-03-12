@@ -121,6 +121,18 @@ fn available_models() -> Vec<Model> {
             "deepseek",
             "DeepSeek 3.2 (Thinking)",
         ),
+        create_model(
+            "deepseek-chat",
+            1770314400,
+            "deepseek",
+            "DeepSeek Chat",
+        ),
+        create_model(
+            "deepseek-reasoner",
+            1770314400,
+            "deepseek",
+            "DeepSeek Reasoner",
+        ),
     ]
 }
 
@@ -249,6 +261,7 @@ pub async fn post_messages(
     let kiro_request = KiroRequest {
         conversation_state: conversion_result.conversation_state,
         profile_arn: state.profile_arn.clone(),
+        inference_config: None,
     };
 
     let request_body = match serde_json::to_string(&kiro_request) {
@@ -655,6 +668,8 @@ mod tests {
 
         assert!(ids.contains(&"deepseek-3-2"));
         assert!(ids.contains(&"deepseek-3-2-thinking"));
+        assert!(ids.contains(&"deepseek-chat"));
+        assert!(ids.contains(&"deepseek-reasoner"));
 
         let deepseek = models
             .iter()
@@ -779,6 +794,7 @@ pub async fn post_messages_cc(
     let kiro_request = KiroRequest {
         conversation_state: conversion_result.conversation_state,
         profile_arn: state.profile_arn.clone(),
+        inference_config: None,
     };
 
     let request_body = match serde_json::to_string(&kiro_request) {
@@ -860,6 +876,32 @@ async fn handle_stream_request_buffered(
         .header(header::CONNECTION, "keep-alive")
         .body(Body::from_stream(stream))
         .unwrap()
+}
+
+#[cfg(test)]
+mod model_response_tests {
+    use axum::{body::to_bytes, response::IntoResponse};
+
+    use super::get_models;
+
+    #[tokio::test]
+    async fn models_include_deepseek() {
+        let response = get_models().await.into_response();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let model_ids = json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry["id"].as_str())
+            .collect::<Vec<_>>();
+
+        assert!(model_ids.contains(&"claude-sonnet-4-6"));
+        assert!(model_ids.contains(&"deepseek-3-2"));
+        assert!(model_ids.contains(&"deepseek-3-2-thinking"));
+        assert!(model_ids.contains(&"deepseek-chat"));
+        assert!(model_ids.contains(&"deepseek-reasoner"));
+    }
 }
 
 /// 创建缓冲 SSE 事件流
