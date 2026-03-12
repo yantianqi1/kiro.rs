@@ -82,20 +82,26 @@ Complete all chunked operations without commentary.";
 /// - 所有 haiku → claude-haiku-4.5
 pub fn map_model(model: &str) -> Option<String> {
     let model_lower = model.to_lowercase();
+    let model_base = model_lower.strip_suffix("-thinking").unwrap_or(&model_lower);
 
-    if model_lower.contains("sonnet") {
-        if model_lower.contains("4-6") || model_lower.contains("4.6") {
+    if matches!(
+        model_base,
+        "deepseek-3-2" | "deepseek-3.2" | "kiro-deepseek-3-2" | "kiro-deepseek-3.2"
+    ) {
+        Some("deepseek-3.2".to_string())
+    } else if model_base.contains("sonnet") {
+        if model_base.contains("4-6") || model_base.contains("4.6") {
             Some("claude-sonnet-4.6".to_string())
         } else {
             Some("claude-sonnet-4.5".to_string())
         }
-    } else if model_lower.contains("opus") {
-        if model_lower.contains("4-5") || model_lower.contains("4.5") {
+    } else if model_base.contains("opus") {
+        if model_base.contains("4-5") || model_base.contains("4.5") {
             Some("claude-opus-4.5".to_string())
         } else {
             Some("claude-opus-4.6".to_string())
         }
-    } else if model_lower.contains("haiku") {
+    } else if model_base.contains("haiku") {
         Some("claude-haiku-4.5".to_string())
     } else {
         None
@@ -853,6 +859,18 @@ mod tests {
                 .unwrap()
                 .contains("haiku")
         );
+    }
+
+    #[test]
+    fn test_map_model_deepseek() {
+        let result = map_model("deepseek-3-2");
+        assert_eq!(result, Some("deepseek-3.2".to_string()));
+    }
+
+    #[test]
+    fn test_map_model_deepseek_thinking_suffix() {
+        let result = map_model("deepseek-3-2-thinking");
+        assert_eq!(result, Some("deepseek-3.2".to_string()));
     }
 
     #[test]
