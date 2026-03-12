@@ -1,13 +1,13 @@
 use axum::{
     Router,
     extract::DefaultBodyLimit,
-    http::StatusCode,
     middleware,
-    response::IntoResponse,
     routing::post,
 };
 
 use crate::anthropic::{AppState, auth_middleware, cors_layer};
+
+use super::handlers::post_chat_completions;
 
 /// 请求体最大大小限制 (50MB)
 const MAX_BODY_SIZE: usize = 50 * 1024 * 1024;
@@ -25,10 +25,6 @@ pub fn create_router(state: AppState) -> Router {
         .layer(cors_layer())
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
         .with_state(state)
-}
-
-async fn post_chat_completions() -> impl IntoResponse {
-    StatusCode::NOT_IMPLEMENTED
 }
 
 #[cfg(test)]

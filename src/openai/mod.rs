@@ -1,3 +1,4 @@
+pub mod handlers;
 pub mod response_converter;
 pub mod request_converter;
 pub mod router;
