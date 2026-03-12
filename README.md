@@ -51,7 +51,7 @@
   - [2. 最小配置](#2-最小配置)
   - [3. 启动](#3-启动)
   - [4. 验证](#4-验证)
-  - [Docker](#docker)
+  - [Docker / GitHub 部署](#docker--github-部署)
 - [配置详解](#配置详解)
   - [config.json](#configjson)
   - [credentials.json](#credentialsjson)
@@ -153,15 +153,59 @@ curl http://127.0.0.1:8990/v1/messages \
   }'
 ```
 
-### Docker
+### Docker / GitHub 部署
 
-也可以通过 Docker 启动：
+推荐的生产部署方式是：
+
+1. 将仓库推送到 GitHub 的 `main` 或 `master` 分支
+2. 等待 GitHub Actions 的 Docker 工作流发布公开 GHCR 镜像
+3. 在服务器上拉取本仓库，并按下面步骤准备 `.env` 和 `config/`
+4. 运行 `docker compose up -d`
+
+> 首次发布到 GHCR 后，如果匿名拉取失败，请到 GitHub Packages 页面将容器包可见性改为 `Public`。这通常只需要做一次。
+
+服务器部署步骤：
 
 ```bash
-docker-compose up
+git clone <your-repo-url>
+cd <your-repo-dir>
+cp .env.example .env
+mkdir -p config
+cp config.example.json config/config.json
+cp credentials.example.social.json config/credentials.json
 ```
 
-需要将 `config.json` 和 `credentials.json` 挂载到容器中，具体参见 `docker-compose.yml`。
+编辑 `.env`，至少设置：
+
+```dotenv
+GHCR_OWNER=你的 GitHub 用户名或组织名
+IMAGE_TAG=latest
+```
+
+然后启动：
+
+```bash
+docker compose up -d
+```
+
+默认会挂载以下文件到容器内：
+
+- `./config/config.json` -> `/app/config/config.json`
+- `./config/credentials.json` -> `/app/config/credentials.json`
+
+如果你需要回滚到某次主分支构建，可将 `.env` 中的 `IMAGE_TAG` 改成对应的 `sha-<shortsha>` 标签后重新执行：
+
+```bash
+docker compose up -d
+```
+
+`.env.example` 支持的字段：
+
+- `GHCR_OWNER`: 必填，GHCR 命名空间
+- `IMAGE_NAME`: 可选，默认 `kiro-rs`
+- `IMAGE_TAG`: 可选，默认 `latest`
+- `CONTAINER_NAME`: 可选，默认 `kiro-rs`
+- `HOST_PORT`: 可选，默认 `8990`
 
 ## 配置详解
 
@@ -510,6 +554,7 @@ kiro-rs/
 ├── admin-ui/                   # Admin UI 前端工程（构建产物会嵌入二进制）
 ├── tools/                      # 辅助工具
 ├── Cargo.toml                  # 项目配置
+├── .env.example                # Docker / GHCR 部署环境变量示例
 ├── config.example.json         # 配置示例
 ├── docker-compose.yml          # Docker Compose 配置
 └── Dockerfile                  # Docker 构建文件
