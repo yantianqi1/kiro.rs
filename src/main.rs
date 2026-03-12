@@ -11,11 +11,27 @@ pub mod token;
 use std::sync::Arc;
 
 use clap::Parser;
+use http_client::ProxyConfig;
 use kiro::model::credentials::{CredentialsConfig, KiroCredentials};
 use kiro::provider::KiroProvider;
 use kiro::token_manager::MultiTokenManager;
 use model::arg::Args;
 use model::config::Config;
+
+fn create_openai_state(
+    api_key: &str,
+    token_manager: Arc<MultiTokenManager>,
+    proxy_config: Option<ProxyConfig>,
+    profile_arn: Option<String>,
+) -> anthropic::AppState {
+    let state = anthropic::AppState::new(api_key.to_string())
+        .with_kiro_provider(KiroProvider::with_proxy(token_manager, proxy_config));
+
+    match profile_arn {
+        Some(profile_arn) => state.with_profile_arn(profile_arn),
+        None => state,
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -98,7 +114,7 @@ async fn main() {
         api_url: config.count_tokens_api_url.clone(),
         api_key: config.count_tokens_api_key.clone(),
         auth_type: config.count_tokens_auth_type.clone(),
-        proxy: proxy_config,
+        proxy: proxy_config.clone(),
         tls_backend: config.tls_backend,
     });
 
@@ -108,7 +124,12 @@ async fn main() {
         Some(kiro_provider),
         first_credentials.profile_arn.clone(),
     );
-    let openai_app = openai::create_router(anthropic::AppState::new(api_key.clone()));
+    let openai_app = openai::create_router(create_openai_state(
+        &api_key,
+        token_manager.clone(),
+        proxy_config.clone(),
+        first_credentials.profile_arn.clone(),
+    ));
 
     // 构建 Admin API 路由（如果配置了非空的 admin_api_key）
     // 安全检查：空字符串被视为未配置，防止空 key 绕过认证
@@ -163,4 +184,35 @@ async fn main() {
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_token_manager() -> Arc<MultiTokenManager> {
+        Arc::new(
+            MultiTokenManager::new(
+                Config::default(),
+                vec![KiroCredentials::default()],
+                None,
+                None,
+                false,
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn openai_state_includes_provider_and_profile_arn() {
+        let state = create_openai_state(
+            "test-key",
+            sample_token_manager(),
+            None,
+            Some("arn:aws:test".to_string()),
+        );
+
+        assert!(state.kiro_provider.is_some());
+        assert_eq!(state.profile_arn.as_deref(), Some("arn:aws:test"));
+    }
 }
