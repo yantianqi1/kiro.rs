@@ -30,6 +30,7 @@
 ## 功能特性
 
 - **Anthropic API 兼容**: 完整支持 Anthropic Claude API 格式
+- **OpenAI Chat Completions 兼容**: 支持 OpenAI 客户端通过 `/v1/chat/completions` 访问 DeepSeek/OpenAI 风格请求
 - **流式响应**: 支持 SSE (Server-Sent Events) 流式输出
 - **Token 自动刷新**: 自动管理和刷新 OAuth Token
 - **多凭据支持**: 支持配置多个凭据，按优先级自动故障转移
@@ -149,6 +150,21 @@ curl http://127.0.0.1:8990/v1/messages \
     "stream": true,
     "messages": [
       {"role": "user", "content": "Hello, Claude!"}
+    ]
+  }'
+```
+
+也可以直接验证 OpenAI 兼容端点：
+
+```bash
+curl http://127.0.0.1:8990/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-kiro-rs-qazWSXedcRFV123456" \
+  -d '{
+    "model": "deepseek-chat",
+    "stream": false,
+    "messages": [
+      {"role": "user", "content": "Reply with exactly OK."}
     ]
   }'
 ```
@@ -373,6 +389,9 @@ RUST_LOG=debug ./target/release/kiro-rs
 | `/v1/models` | GET | 获取可用模型列表 |
 | `/v1/messages` | POST | 创建消息（对话） |
 | `/v1/messages/count_tokens` | POST | 估算 Token 数量 |
+| `/v1/chat/completions` | POST | OpenAI Chat Completions 兼容端点，适合 DeepSeek / OpenAI 风格客户端 |
+
+`/v1/models` 是共享模型列表端点，Anthropic 客户端和 OpenAI 客户端都使用同一份模型元数据；现有 `/v1/messages` 与 `/v1/messages/count_tokens` 保持原有 Anthropic 兼容语义不变。
 
 ### Claude Code 兼容端点 (/cc/v1)
 
@@ -385,6 +404,17 @@ RUST_LOG=debug ./target/release/kiro-rs
 > - `/v1/messages`：实时流式返回，`message_start` 中的 `input_tokens` 是估算值
 > - `/cc/v1/messages`：缓冲模式，等待上游流完成后，用从 `contextUsageEvent` 计算的准确 `input_tokens` 更正 `message_start`，然后一次性返回所有事件
 > - 等待期间会每 25 秒发送 `ping` 事件保活
+
+> **OpenAI 路径说明**：
+> - `/v1/chat/completions` 同样采用实时流式语义，不使用 `/cc/v1/messages` 的缓冲模式
+> - `/cc/v1/messages` 的缓冲行为只用于 Claude Code 兼容，不影响标准 Anthropic `/v1/messages` 或 OpenAI `/v1/chat/completions`
+
+#### 端点检查清单
+
+- `/v1/models`：共享给 Anthropic 和 OpenAI 客户端
+- `/v1/messages`、`/v1/messages/count_tokens`：保持 Anthropic 兼容接口
+- `/v1/chat/completions`：提供 OpenAI Chat Completions 兼容接口
+- `/cc/v1/messages`：仅 Claude Code 兼容路径使用缓冲模式
 
 ### Thinking 模式
 
