@@ -73,7 +73,14 @@ fn map_provider_error(err: Error) -> Response {
 pub async fn get_models() -> impl IntoResponse {
     tracing::info!("Received GET /v1/models request");
 
-    let models = vec![
+    Json(ModelsResponse {
+        object: "list".to_string(),
+        data: available_models(),
+    })
+}
+
+fn available_models() -> Vec<Model> {
+    vec![
         Model {
             id: "claude-sonnet-4-5-20250929".to_string(),
             object: "model".to_string(),
@@ -164,12 +171,25 @@ pub async fn get_models() -> impl IntoResponse {
             model_type: "chat".to_string(),
             max_tokens: 32000,
         },
-    ];
-
-    Json(ModelsResponse {
-        object: "list".to_string(),
-        data: models,
-    })
+        Model {
+            id: "deepseek-chat".to_string(),
+            object: "model".to_string(),
+            created: 1770314400,
+            owned_by: "deepseek".to_string(),
+            display_name: "DeepSeek Chat".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: 32000,
+        },
+        Model {
+            id: "deepseek-reasoner".to_string(),
+            object: "model".to_string(),
+            created: 1770314400,
+            owned_by: "deepseek".to_string(),
+            display_name: "DeepSeek Reasoner".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: 32000,
+        },
+    ]
 }
 
 /// POST /v1/messages
@@ -812,6 +832,30 @@ async fn handle_stream_request_buffered(
         .header(header::CONNECTION, "keep-alive")
         .body(Body::from_stream(stream))
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{body::to_bytes, response::IntoResponse};
+
+    use super::get_models;
+
+    #[tokio::test]
+    async fn models_include_deepseek() {
+        let response = get_models().await.into_response();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let model_ids = json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry["id"].as_str())
+            .collect::<Vec<_>>();
+
+        assert!(model_ids.contains(&"claude-sonnet-4-6"));
+        assert!(model_ids.contains(&"deepseek-chat"));
+        assert!(model_ids.contains(&"deepseek-reasoner"));
+    }
 }
 
 /// 创建缓冲 SSE 事件流

@@ -159,3 +159,14 @@ pub struct OpenAiError {
     #[serde(rename = "type")]
     pub error_type: String,
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OpenAiModelsResponse {
+    pub object: String,
+    pub data: Vec<OpenAiModel>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OpenAiModel {
+    pub id: String,
+}

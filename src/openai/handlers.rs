@@ -408,7 +408,7 @@ mod tests {
         kiro::parser::crc::crc32,
         openai::{
             router::create_router,
-            types::{ChatCompletionsRequest, ChatMessage},
+            types::{ChatCompletionsRequest, ChatMessage, OpenAiModelsResponse},
         },
     };
 
@@ -591,5 +591,64 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn models_include_deepseek_in_merged_app() {
+        let app = crate::anthropic::create_router_with_provider("test-key", None, None)
+            .merge(create_router(AppState::new("test-key")));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let response = reqwest::Client::new()
+            .get(format!("http://{addr}/v1/models"))
+            .header("x-api-key", "test-key")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let models: OpenAiModelsResponse = response.json().await.unwrap();
+        let model_ids = models
+            .data
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(model_ids.contains(&"claude-sonnet-4-6"));
+        assert!(model_ids.contains(&"deepseek-chat"));
+        assert!(model_ids.contains(&"deepseek-reasoner"));
+    }
+
+    #[tokio::test]
+    async fn anthropic_messages_route_still_works_in_merged_app() {
+        let app = crate::anthropic::create_router_with_provider("test-key", None, None)
+            .merge(create_router(AppState::new("test-key")));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{addr}/v1/messages"))
+            .header("x-api-key", "test-key")
+            .json(&serde_json::json!({
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 32,
+                "messages": [{ "role": "user", "content": "Hello" }]
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        let json: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(json["error"]["type"], "service_unavailable");
     }
 }
