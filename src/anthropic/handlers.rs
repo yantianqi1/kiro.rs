@@ -2,11 +2,11 @@
 
 use std::convert::Infallible;
 
-use anyhow::Error;
 use crate::kiro::model::events::Event;
 use crate::kiro::model::requests::kiro::KiroRequest;
 use crate::kiro::parser::decoder::EventStreamDecoder;
 use crate::token;
+use anyhow::Error;
 use axum::{
     Json as JsonExtractor,
     body::Body,
@@ -24,8 +24,105 @@ use uuid::Uuid;
 use super::converter::{ConversionError, convert_request};
 use super::middleware::AppState;
 use super::stream::{BufferedStreamContext, SseEvent, StreamContext};
-use super::types::{CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse, OutputConfig, Thinking};
+use super::types::{
+    CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse,
+    OutputConfig, Thinking,
+};
 use super::websearch;
+
+const MODEL_OBJECT: &str = "model";
+const MODEL_TYPE_CHAT: &str = "chat";
+const DEFAULT_MODEL_MAX_TOKENS: i32 = 32000;
+const DEEPSEEK_3_2_CREATED_AT: i64 = 1735689600;
+
+fn create_model(id: &str, created: i64, owned_by: &str, display_name: &str) -> Model {
+    Model {
+        id: id.to_string(),
+        object: MODEL_OBJECT.to_string(),
+        created,
+        owned_by: owned_by.to_string(),
+        display_name: display_name.to_string(),
+        model_type: MODEL_TYPE_CHAT.to_string(),
+        max_tokens: DEFAULT_MODEL_MAX_TOKENS,
+    }
+}
+
+fn available_models() -> Vec<Model> {
+    vec![
+        create_model(
+            "claude-sonnet-4-5-20250929",
+            1727568000,
+            "anthropic",
+            "Claude Sonnet 4.5",
+        ),
+        create_model(
+            "claude-sonnet-4-5-20250929-thinking",
+            1727568000,
+            "anthropic",
+            "Claude Sonnet 4.5 (Thinking)",
+        ),
+        create_model(
+            "claude-opus-4-5-20251101",
+            1730419200,
+            "anthropic",
+            "Claude Opus 4.5",
+        ),
+        create_model(
+            "claude-opus-4-5-20251101-thinking",
+            1730419200,
+            "anthropic",
+            "Claude Opus 4.5 (Thinking)",
+        ),
+        create_model(
+            "claude-sonnet-4-6",
+            1770314400,
+            "anthropic",
+            "Claude Sonnet 4.6",
+        ),
+        create_model(
+            "claude-sonnet-4-6-thinking",
+            1770314400,
+            "anthropic",
+            "Claude Sonnet 4.6 (Thinking)",
+        ),
+        create_model(
+            "claude-opus-4-6",
+            1770314400,
+            "anthropic",
+            "Claude Opus 4.6",
+        ),
+        create_model(
+            "claude-opus-4-6-thinking",
+            1770314400,
+            "anthropic",
+            "Claude Opus 4.6 (Thinking)",
+        ),
+        create_model(
+            "claude-haiku-4-5-20251001",
+            1727740800,
+            "anthropic",
+            "Claude Haiku 4.5",
+        ),
+        create_model(
+            "claude-haiku-4-5-20251001-thinking",
+            1727740800,
+            "anthropic",
+            "Claude Haiku 4.5 (Thinking)",
+        ),
+        create_model(
+            "deepseek-3-2",
+            DEEPSEEK_3_2_CREATED_AT,
+            "deepseek",
+            "DeepSeek 3.2",
+        ),
+        create_model(
+            "deepseek-3-2-thinking",
+            DEEPSEEK_3_2_CREATED_AT,
+            "deepseek",
+            "DeepSeek 3.2 (Thinking)",
+        ),
+    ]
+}
 
 /// 将 KiroProvider 错误映射为 HTTP 响应
 fn map_provider_error(err: Error) -> Response {
@@ -73,102 +170,9 @@ fn map_provider_error(err: Error) -> Response {
 pub async fn get_models() -> impl IntoResponse {
     tracing::info!("Received GET /v1/models request");
 
-    let models = vec![
-        Model {
-            id: "claude-sonnet-4-5-20250929".to_string(),
-            object: "model".to_string(),
-            created: 1727568000,
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Sonnet 4.5".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
-            id: "claude-sonnet-4-5-20250929-thinking".to_string(),
-            object: "model".to_string(),
-            created: 1727568000,
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Sonnet 4.5 (Thinking)".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
-            id: "claude-opus-4-5-20251101".to_string(),
-            object: "model".to_string(),
-            created: 1730419200,
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Opus 4.5".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
-            id: "claude-opus-4-5-20251101-thinking".to_string(),
-            object: "model".to_string(),
-            created: 1730419200,
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Opus 4.5 (Thinking)".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
-            id: "claude-sonnet-4-6".to_string(),
-            object: "model".to_string(),
-            created: 1770314400,
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Sonnet 4.6".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
-            id: "claude-sonnet-4-6-thinking".to_string(),
-            object: "model".to_string(),
-            created: 1770314400,
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Sonnet 4.6 (Thinking)".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
-            id: "claude-opus-4-6".to_string(),
-            object: "model".to_string(),
-            created: 1770314400,
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Opus 4.6".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
-            id: "claude-opus-4-6-thinking".to_string(),
-            object: "model".to_string(),
-            created: 1770314400,
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Opus 4.6 (Thinking)".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
-            id: "claude-haiku-4-5-20251001".to_string(),
-            object: "model".to_string(),
-            created: 1727740800,
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Haiku 4.5".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
-            id: "claude-haiku-4-5-20251001-thinking".to_string(),
-            object: "model".to_string(),
-            created: 1727740800,
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Haiku 4.5 (Thinking)".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-    ];
-
     Json(ModelsResponse {
         object: "list".to_string(),
-        data: models,
+        data: available_models(),
     })
 }
 
@@ -499,14 +503,14 @@ async fn handle_non_stream_request(
                                 let input: serde_json::Value = if buffer.is_empty() {
                                     serde_json::json!({})
                                 } else {
-                                    serde_json::from_str(buffer)
-                                        .unwrap_or_else(|e| {
-                                            tracing::warn!(
-                                                "工具输入 JSON 解析失败: {}, tool_use_id: {}",
-                                                e, tool_use.tool_use_id
-                                            );
-                                            serde_json::json!({})
-                                        })
+                                    serde_json::from_str(buffer).unwrap_or_else(|e| {
+                                        tracing::warn!(
+                                            "工具输入 JSON 解析失败: {}, tool_use_id: {}",
+                                            e,
+                                            tool_use.tool_use_id
+                                        );
+                                        serde_json::json!({})
+                                    })
                                 };
 
                                 tool_uses.push(json!({
@@ -602,14 +606,10 @@ fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
         return;
     }
 
-    let is_opus_4_6 =
-        model_lower.contains("opus") && (model_lower.contains("4-6") || model_lower.contains("4.6"));
+    let is_opus_4_6 = model_lower.contains("opus")
+        && (model_lower.contains("4-6") || model_lower.contains("4.6"));
 
-    let thinking_type = if is_opus_4_6 {
-        "adaptive"
-    } else {
-        "enabled"
-    };
+    let thinking_type = if is_opus_4_6 { "adaptive" } else { "enabled" };
 
     tracing::info!(
         model = %payload.model,
@@ -621,11 +621,61 @@ fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
         thinking_type: thinking_type.to_string(),
         budget_tokens: 20000,
     });
-    
+
     if is_opus_4_6 {
         payload.output_config = Some(OutputConfig {
             effort: "high".to_string(),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_messages_request(model: &str) -> MessagesRequest {
+        MessagesRequest {
+            model: model.to_string(),
+            max_tokens: 1024,
+            messages: vec![],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            thinking: None,
+            output_config: None,
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn test_available_models_include_deepseek() {
+        let models = available_models();
+        let ids: Vec<_> = models.iter().map(|model| model.id.as_str()).collect();
+
+        assert!(ids.contains(&"deepseek-3-2"));
+        assert!(ids.contains(&"deepseek-3-2-thinking"));
+
+        let deepseek = models
+            .iter()
+            .find(|model| model.id == "deepseek-3-2")
+            .expect("deepseek-3-2 should be present");
+        assert_eq!(deepseek.display_name, "DeepSeek 3.2");
+        assert_eq!(deepseek.owned_by, "deepseek");
+    }
+
+    #[test]
+    fn test_override_thinking_from_deepseek_thinking_model_name() {
+        let mut payload = test_messages_request("deepseek-3-2-thinking");
+
+        override_thinking_from_model_name(&mut payload);
+
+        let thinking = payload
+            .thinking
+            .expect("deepseek thinking variant should enable thinking");
+        assert_eq!(thinking.thinking_type, "enabled");
+        assert_eq!(thinking.budget_tokens, 20000);
+        assert!(payload.output_config.is_none());
     }
 }
 

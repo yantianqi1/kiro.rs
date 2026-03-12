@@ -29,14 +29,26 @@ fn normalize_json_schema(schema: serde_json::Value) -> serde_json::Value {
     };
 
     // type（必须是字符串）
-    if !obj.get("type").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty()) {
-        obj.insert("type".to_string(), serde_json::Value::String("object".to_string()));
+    if !obj
+        .get("type")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty())
+    {
+        obj.insert(
+            "type".to_string(),
+            serde_json::Value::String("object".to_string()),
+        );
     }
 
     // properties（必须是 object）
     match obj.get("properties") {
         Some(serde_json::Value::Object(_)) => {}
-        _ => { obj.insert("properties".to_string(), serde_json::Value::Object(serde_json::Map::new())); }
+        _ => {
+            obj.insert(
+                "properties".to_string(),
+                serde_json::Value::Object(serde_json::Map::new()),
+            );
+        }
     }
 
     // required（必须是 string 数组）
@@ -53,7 +65,12 @@ fn normalize_json_schema(schema: serde_json::Value) -> serde_json::Value {
     // additionalProperties（允许 bool 或 object，其他按 true 处理）
     match obj.get("additionalProperties") {
         Some(serde_json::Value::Bool(_)) | Some(serde_json::Value::Object(_)) => {}
-        _ => { obj.insert("additionalProperties".to_string(), serde_json::Value::Bool(true)); }
+        _ => {
+            obj.insert(
+                "additionalProperties".to_string(),
+                serde_json::Value::Bool(true),
+            );
+        }
     }
 
     serde_json::Value::Object(obj)
@@ -72,6 +89,24 @@ Never suggest bypassing these limits via alternative tools. \
 Never ask the user whether to switch approaches. \
 Complete all chunked operations without commentary.";
 
+const KIRO_MODEL_CLAUDE_SONNET_4_5: &str = "claude-sonnet-4.5";
+const KIRO_MODEL_CLAUDE_SONNET_4_6: &str = "claude-sonnet-4.6";
+const KIRO_MODEL_CLAUDE_OPUS_4_5: &str = "claude-opus-4.5";
+const KIRO_MODEL_CLAUDE_OPUS_4_6: &str = "claude-opus-4.6";
+const KIRO_MODEL_CLAUDE_HAIKU_4_5: &str = "claude-haiku-4.5";
+const KIRO_MODEL_DEEPSEEK_3_2: &str = "deepseek-3.2";
+
+fn strip_thinking_suffix(model: &str) -> &str {
+    model.strip_suffix("-thinking").unwrap_or(model)
+}
+
+fn is_deepseek_3_2_alias(model: &str) -> bool {
+    matches!(
+        model,
+        "deepseek-3-2" | "deepseek-3.2" | "kiro-deepseek-3-2" | "kiro-deepseek-3.2"
+    )
+}
+
 /// 模型映射：将 Anthropic 模型名映射到 Kiro 模型 ID
 ///
 /// 按照用户要求：
@@ -82,21 +117,24 @@ Complete all chunked operations without commentary.";
 /// - 所有 haiku → claude-haiku-4.5
 pub fn map_model(model: &str) -> Option<String> {
     let model_lower = model.to_lowercase();
+    let model_base = strip_thinking_suffix(&model_lower);
 
-    if model_lower.contains("sonnet") {
-        if model_lower.contains("4-6") || model_lower.contains("4.6") {
-            Some("claude-sonnet-4.6".to_string())
+    if is_deepseek_3_2_alias(model_base) {
+        Some(KIRO_MODEL_DEEPSEEK_3_2.to_string())
+    } else if model_base.contains("sonnet") {
+        if model_base.contains("4-6") || model_base.contains("4.6") {
+            Some(KIRO_MODEL_CLAUDE_SONNET_4_6.to_string())
         } else {
-            Some("claude-sonnet-4.5".to_string())
+            Some(KIRO_MODEL_CLAUDE_SONNET_4_5.to_string())
         }
-    } else if model_lower.contains("opus") {
-        if model_lower.contains("4-5") || model_lower.contains("4.5") {
-            Some("claude-opus-4.5".to_string())
+    } else if model_base.contains("opus") {
+        if model_base.contains("4-5") || model_base.contains("4.5") {
+            Some(KIRO_MODEL_CLAUDE_OPUS_4_5.to_string())
         } else {
-            Some("claude-opus-4.6".to_string())
+            Some(KIRO_MODEL_CLAUDE_OPUS_4_6.to_string())
         }
-    } else if model_lower.contains("haiku") {
-        Some("claude-haiku-4.5".to_string())
+    } else if model_base.contains("haiku") {
+        Some(KIRO_MODEL_CLAUDE_HAIKU_4_5.to_string())
     } else {
         None
     }
@@ -536,7 +574,9 @@ fn convert_tools(tools: &Option<Vec<super::types::Tool>>) -> Vec<Tool> {
                 tool_specification: ToolSpecification {
                     name: t.name.clone(),
                     description,
-                    input_schema: InputSchema::from_json(normalize_json_schema(serde_json::json!(t.input_schema))),
+                    input_schema: InputSchema::from_json(normalize_json_schema(serde_json::json!(
+                        t.input_schema
+                    ))),
                 },
             }
         })
@@ -579,7 +619,11 @@ fn has_thinking_tags(content: &str) -> bool {
 ///   注意：该切片与 `req.messages` 可能不同（prefill 时会截断末尾的 assistant 消息），
 ///   调用方应始终使用此参数而非 `req.messages`。
 /// * `model_id` - 已映射的 Kiro 模型 ID
-fn build_history(req: &MessagesRequest, messages: &[super::types::Message], model_id: &str) -> Result<Vec<Message>, ConversionError> {
+fn build_history(
+    req: &MessagesRequest,
+    messages: &[super::types::Message],
+    model_id: &str,
+) -> Result<Vec<Message>, ConversionError> {
     let mut history = Vec::new();
 
     // 生成thinking前缀（如果需要）
@@ -889,6 +933,31 @@ mod tests {
     }
 
     #[test]
+    fn test_map_model_deepseek() {
+        let result = map_model("deepseek-3-2");
+        assert_eq!(result, Some("deepseek-3.2".to_string()));
+    }
+
+    #[test]
+    fn test_map_model_deepseek_thinking_suffix() {
+        let result = map_model("deepseek-3-2-thinking");
+        assert_eq!(result, Some("deepseek-3.2".to_string()));
+    }
+
+    #[test]
+    fn test_map_model_deepseek_aliases() {
+        assert_eq!(map_model("deepseek-3.2"), Some("deepseek-3.2".to_string()));
+        assert_eq!(
+            map_model("deepseek-3.2-thinking"),
+            Some("deepseek-3.2".to_string())
+        );
+        assert_eq!(
+            map_model("kiro-deepseek-3-2"),
+            Some("deepseek-3.2".to_string())
+        );
+    }
+
+    #[test]
     fn test_determine_chat_trigger_type() {
         // 无工具时返回 MANUAL
         let req = MessagesRequest {
@@ -1091,6 +1160,37 @@ mod tests {
                 .filter(|c| *c == '-')
                 .count(),
             4
+        );
+    }
+
+    #[test]
+    fn test_convert_request_with_deepseek_model() {
+        use super::super::types::Message as AnthropicMessage;
+
+        let req = MessagesRequest {
+            model: "deepseek-3-2".to_string(),
+            max_tokens: 1024,
+            messages: vec![AnthropicMessage {
+                role: "user".to_string(),
+                content: serde_json::json!("Hello"),
+            }],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            thinking: None,
+            output_config: None,
+            metadata: None,
+        };
+
+        let result = convert_request(&req).unwrap();
+        assert_eq!(
+            result
+                .conversation_state
+                .current_message
+                .user_input_message
+                .model_id,
+            "deepseek-3.2"
         );
     }
 
@@ -1459,9 +1559,15 @@ mod tests {
 
         let content = &result.assistant_response_message.content;
         assert!(content.contains("<thinking>"), "应包含 thinking 标签");
-        assert!(content.contains("Let me read that file"), "应包含第二条消息的 text 内容");
+        assert!(
+            content.contains("Let me read that file"),
+            "应包含第二条消息的 text 内容"
+        );
 
-        let tool_uses = result.assistant_response_message.tool_uses.expect("应有 tool_uses");
+        let tool_uses = result
+            .assistant_response_message
+            .tool_uses
+            .expect("应有 tool_uses");
         assert_eq!(tool_uses.len(), 1);
         assert_eq!(tool_uses[0].tool_use_id, "toolu_01ABC");
     }
@@ -1511,7 +1617,11 @@ mod tests {
         };
 
         let result = convert_request(&req);
-        assert!(result.is_ok(), "连续 assistant 消息场景不应报错: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "连续 assistant 消息场景不应报错: {:?}",
+            result.err()
+        );
 
         let state = result.unwrap().conversation_state;
         let mut found_tool_use = false;
