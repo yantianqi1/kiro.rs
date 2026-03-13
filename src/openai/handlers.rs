@@ -54,24 +54,22 @@ pub async fn post_chat_completions(
             let provider = provider.clone();
             async move {
                 let response = provider.call_api_stream(&request_body).await?;
-                let stream = response.bytes_stream().map(|chunk| chunk.map_err(Error::from));
+                let stream = response
+                    .bytes_stream()
+                    .map(|chunk| chunk.map_err(Error::from));
                 Ok::<ByteStream, Error>(Box::pin(stream))
             }
         })
         .await
     } else {
-        handle_non_stream_with_transport(
-            payload,
-            state.profile_arn.clone(),
-            move |request_body| {
-                let provider = provider.clone();
-                async move {
-                    let response = provider.call_api(&request_body).await?;
-                    let bytes = response.bytes().await?;
-                    Ok::<Bytes, Error>(bytes)
-                }
-            },
-        )
+        handle_non_stream_with_transport(payload, state.profile_arn.clone(), move |request_body| {
+            let provider = provider.clone();
+            async move {
+                let response = provider.call_api(&request_body).await?;
+                let bytes = response.bytes().await?;
+                Ok::<Bytes, Error>(bytes)
+            }
+        })
         .await
     }
 }
@@ -125,10 +123,7 @@ where
         Err(error) => return map_provider_error(error),
     };
 
-    let stream = create_openai_sse_stream(
-        upstream,
-        prepared.model,
-    );
+    let stream = create_openai_sse_stream(upstream, prepared.model, prepared.thinking_enabled);
 
     Response::builder()
         .status(StatusCode::OK)
@@ -269,11 +264,18 @@ fn decode_event_stream_bytes(body_bytes: &[u8]) -> Vec<Event> {
 fn create_openai_sse_stream(
     upstream: ByteStream,
     model: String,
+    thinking_enabled: bool,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
-    let openai_converter = OpenAiStreamConverter::new(model);
+    let openai_converter = OpenAiStreamConverter::new_with_reasoning(model, thinking_enabled);
 
     stream::unfold(
-        (upstream, EventStreamDecoder::new(), openai_converter, false, false),
+        (
+            upstream,
+            EventStreamDecoder::new(),
+            openai_converter,
+            false,
+            false,
+        ),
         |(mut upstream, mut decoder, mut converter, initial_sent, finished)| async move {
             if finished {
                 return None;
@@ -488,7 +490,10 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["object"], "chat.completion");
-        assert_eq!(json["choices"][0]["message"]["content"], "Hello from upstream");
+        assert_eq!(
+            json["choices"][0]["message"]["content"],
+            "Hello from upstream"
+        );
         let request_body = captured_body.lock().unwrap().clone().unwrap();
         assert!(request_body.contains("\"profileArn\":\"arn:aws:test\""));
         assert!(request_body.contains("\"modelId\":\"deepseek-3.2\""));
@@ -537,6 +542,7 @@ mod tests {
         let mut output = Box::pin(super::create_openai_sse_stream(
             Box::pin(upstream),
             "deepseek-v3.2-exp".to_string(),
+            true,
         ));
 
         let first = output.next().await.unwrap().unwrap();
@@ -549,6 +555,57 @@ mod tests {
         assert!(
             second_text.contains("\"content\":\"a\""),
             "expected first upstream assistant chunk to be forwarded immediately, got: {second_text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn thinking_stream_preserves_reasoning_content_and_text_content() {
+        let upstream = stream::iter(vec![
+            Ok::<Bytes, Error>(assistant_response_bytes("<thinking>a")),
+            Ok::<Bytes, Error>(assistant_response_bytes("bc</thinking>\n\nHe")),
+            Ok::<Bytes, Error>(assistant_response_bytes("llo")),
+        ]);
+        let mut output = Box::pin(super::create_openai_sse_stream(
+            Box::pin(upstream),
+            "deepseek-v3.2-exp".to_string(),
+            true,
+        ));
+
+        let mut chunks = Vec::new();
+        while let Some(item) = output.next().await {
+            let chunk = item.unwrap();
+            chunks.push(String::from_utf8(chunk.to_vec()).unwrap());
+        }
+
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.contains("\"reasoning_content\":\"a\"")),
+            "expected reasoning_content chunk for first thinking token, got: {chunks:?}"
+        );
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.contains("\"reasoning_content\":\"bc\"")),
+            "expected reasoning_content chunk for remaining thinking text, got: {chunks:?}"
+        );
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.contains("\"content\":\"He\"")),
+            "expected text content chunk after thinking closes, got: {chunks:?}"
+        );
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.contains("\"content\":\"llo\"")),
+            "expected subsequent text content chunk to keep streaming, got: {chunks:?}"
+        );
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| !chunk.contains("<thinking>") && !chunk.contains("</thinking>")),
+            "expected thinking tags to stay out of downstream content chunks, got: {chunks:?}"
         );
     }
 

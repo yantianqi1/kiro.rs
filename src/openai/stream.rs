@@ -14,6 +14,108 @@ use super::types::{
     ToolCallFunction,
 };
 
+const THINKING_START_TAG: &str = "<thinking>";
+const THINKING_END_TAG: &str = "</thinking>";
+const THINKING_END_SEQUENCE: &str = "</thinking>\n\n";
+const QUOTE_CHARS: &[u8] = &[
+    b'`', b'"', b'\'', b'\\', b'#', b'!', b'@', b'$', b'%', b'^', b'&', b'*', b'(', b')', b'-',
+    b'_', b'=', b'+', b'[', b']', b'{', b'}', b';', b':', b'<', b'>', b',', b'.', b'?', b'/',
+];
+
+fn is_quote_char(buffer: &str, pos: usize) -> bool {
+    buffer
+        .as_bytes()
+        .get(pos)
+        .map(|c| QUOTE_CHARS.contains(c))
+        .unwrap_or(false)
+}
+
+fn find_real_thinking_start_tag(buffer: &str) -> Option<usize> {
+    let mut search_start = 0;
+
+    while let Some(pos) = buffer[search_start..].find(THINKING_START_TAG) {
+        let absolute_pos = search_start + pos;
+        let has_quote_before = absolute_pos > 0 && is_quote_char(buffer, absolute_pos - 1);
+        let after_pos = absolute_pos + THINKING_START_TAG.len();
+        let has_quote_after = is_quote_char(buffer, after_pos);
+
+        if !has_quote_before && !has_quote_after {
+            return Some(absolute_pos);
+        }
+
+        search_start = absolute_pos + 1;
+    }
+
+    None
+}
+
+fn find_real_thinking_end_tag(buffer: &str) -> Option<usize> {
+    let mut search_start = 0;
+
+    while let Some(pos) = buffer[search_start..].find(THINKING_END_TAG) {
+        let absolute_pos = search_start + pos;
+        let has_quote_before = absolute_pos > 0 && is_quote_char(buffer, absolute_pos - 1);
+        let after_pos = absolute_pos + THINKING_END_TAG.len();
+        let has_quote_after = is_quote_char(buffer, after_pos);
+
+        if has_quote_before || has_quote_after {
+            search_start = absolute_pos + 1;
+            continue;
+        }
+
+        let after_content = &buffer[after_pos..];
+        if after_content.len() < 2 {
+            return None;
+        }
+
+        if after_content.starts_with("\n\n") {
+            return Some(absolute_pos);
+        }
+
+        search_start = absolute_pos + 1;
+    }
+
+    None
+}
+
+fn find_real_thinking_end_tag_at_buffer_end(buffer: &str) -> Option<usize> {
+    let mut search_start = 0;
+
+    while let Some(pos) = buffer[search_start..].find(THINKING_END_TAG) {
+        let absolute_pos = search_start + pos;
+        let has_quote_before = absolute_pos > 0 && is_quote_char(buffer, absolute_pos - 1);
+        let after_pos = absolute_pos + THINKING_END_TAG.len();
+        let has_quote_after = is_quote_char(buffer, after_pos);
+
+        if has_quote_before || has_quote_after {
+            search_start = absolute_pos + 1;
+            continue;
+        }
+
+        if buffer[after_pos..].trim().is_empty() {
+            return Some(absolute_pos);
+        }
+
+        search_start = absolute_pos + 1;
+    }
+
+    None
+}
+
+fn longest_suffix_prefix(buffer: &str, target: &str) -> usize {
+    let max_suffix_len = buffer.len().min(target.len().saturating_sub(1));
+    for suffix_len in (1..=max_suffix_len).rev() {
+        let start = buffer.len() - suffix_len;
+        if !buffer.is_char_boundary(start) {
+            continue;
+        }
+        if target.as_bytes().starts_with(&buffer.as_bytes()[start..]) {
+            return suffix_len;
+        }
+    }
+    0
+}
+
 pub struct OpenAiStreamConverter {
     id: String,
     model: String,
@@ -21,11 +123,20 @@ pub struct OpenAiStreamConverter {
     tool_call_indices: HashMap<i32, i32>,
     tool_call_indices_by_id: HashMap<String, i32>,
     next_tool_call_index: i32,
+    thinking_enabled: bool,
+    thinking_buffer: String,
+    in_thinking_block: bool,
+    thinking_extracted: bool,
+    strip_thinking_leading_newline: bool,
     final_finish_reason: Option<String>,
 }
 
 impl OpenAiStreamConverter {
     pub fn new(model: impl Into<String>) -> Self {
+        Self::new_with_reasoning(model, false)
+    }
+
+    pub fn new_with_reasoning(model: impl Into<String>, thinking_enabled: bool) -> Self {
         Self {
             id: format!("chatcmpl-{}", Uuid::new_v4().simple()),
             model: model.into(),
@@ -33,6 +144,11 @@ impl OpenAiStreamConverter {
             tool_call_indices: HashMap::new(),
             tool_call_indices_by_id: HashMap::new(),
             next_tool_call_index: 0,
+            thinking_enabled,
+            thinking_buffer: String::new(),
+            in_thinking_block: false,
+            thinking_extracted: false,
+            strip_thinking_leading_newline: false,
             final_finish_reason: Some("stop".to_string()),
         }
     }
@@ -50,7 +166,11 @@ impl OpenAiStreamConverter {
     pub fn process_kiro_event(&mut self, event: &Event) -> Vec<String> {
         match event {
             Event::AssistantResponse(resp) => self.process_assistant_response(&resp.content),
-            Event::ToolUse(tool_use) => self.process_tool_use_event(tool_use),
+            Event::ToolUse(tool_use) => {
+                let mut outputs = self.flush_pending_assistant_outputs_for_tool_boundary();
+                outputs.extend(self.process_tool_use_event(tool_use));
+                outputs
+            }
             Event::Exception { exception_type, .. }
                 if exception_type == "ContentLengthExceededException" =>
             {
@@ -61,11 +181,14 @@ impl OpenAiStreamConverter {
         }
     }
 
-    pub fn finish_outputs(&self) -> Vec<String> {
-        vec![
-            self.serialize_chunk(OpenAiChunkDelta::default(), self.final_finish_reason.clone()),
-            "data: [DONE]\n\n".to_string(),
-        ]
+    pub fn finish_outputs(&mut self) -> Vec<String> {
+        let mut outputs = self.flush_pending_assistant_outputs_for_finish();
+        outputs.push(self.serialize_chunk(
+            OpenAiChunkDelta::default(),
+            self.final_finish_reason.clone(),
+        ));
+        outputs.push("data: [DONE]\n\n".to_string());
+        outputs
     }
 
     pub fn process_sse_event(&mut self, event: &SseEvent) -> Vec<String> {
@@ -144,7 +267,9 @@ impl OpenAiStreamConverter {
                     }
                     "input_json_delta" => {
                         let block_index = event.data["index"].as_i64().unwrap_or_default() as i32;
-                        let Some(tool_call_index) = self.tool_call_indices.get(&block_index).copied() else {
+                        let Some(tool_call_index) =
+                            self.tool_call_indices.get(&block_index).copied()
+                        else {
                             return Vec::new();
                         };
 
@@ -179,18 +304,81 @@ impl OpenAiStreamConverter {
         }
     }
 
-    fn process_assistant_response(&self, content: &str) -> Vec<String> {
+    fn process_assistant_response(&mut self, content: &str) -> Vec<String> {
         if content.is_empty() {
             return Vec::new();
         }
 
-        vec![self.serialize_chunk(
-            OpenAiChunkDelta {
-                content: Some(content.to_string()),
-                ..Default::default()
-            },
-            None,
-        )]
+        if !self.thinking_enabled {
+            return vec![self.serialize_content_chunk(content)];
+        }
+
+        self.thinking_buffer.push_str(content);
+        let mut outputs = Vec::new();
+
+        loop {
+            if !self.in_thinking_block && !self.thinking_extracted {
+                if let Some(start_pos) = find_real_thinking_start_tag(&self.thinking_buffer) {
+                    let before_thinking = self.thinking_buffer[..start_pos].to_string();
+                    if !before_thinking.is_empty() && !before_thinking.trim().is_empty() {
+                        outputs.push(self.serialize_content_chunk(&before_thinking));
+                    }
+
+                    self.in_thinking_block = true;
+                    self.strip_thinking_leading_newline = true;
+                    self.thinking_buffer =
+                        self.thinking_buffer[start_pos + THINKING_START_TAG.len()..].to_string();
+                    continue;
+                }
+
+                let retain_len = longest_suffix_prefix(&self.thinking_buffer, THINKING_START_TAG);
+                let safe_len = self.thinking_buffer.len().saturating_sub(retain_len);
+                if safe_len > 0 {
+                    let safe_content = self.thinking_buffer[..safe_len].to_string();
+                    if !safe_content.is_empty() && !safe_content.trim().is_empty() {
+                        outputs.push(self.serialize_content_chunk(&safe_content));
+                        self.thinking_buffer = self.thinking_buffer[safe_len..].to_string();
+                    }
+                }
+                break;
+            } else if self.in_thinking_block {
+                self.strip_thinking_leading_newline_if_needed();
+
+                if let Some(end_pos) = find_real_thinking_end_tag(&self.thinking_buffer) {
+                    let thinking_content = self.thinking_buffer[..end_pos].to_string();
+                    if !thinking_content.is_empty() {
+                        outputs.push(self.serialize_reasoning_chunk(&thinking_content));
+                    }
+
+                    self.in_thinking_block = false;
+                    self.thinking_extracted = true;
+                    self.strip_thinking_leading_newline = false;
+                    self.thinking_buffer =
+                        self.thinking_buffer[end_pos + THINKING_END_SEQUENCE.len()..].to_string();
+                    continue;
+                }
+
+                let retain_len =
+                    longest_suffix_prefix(&self.thinking_buffer, THINKING_END_SEQUENCE);
+                let safe_len = self.thinking_buffer.len().saturating_sub(retain_len);
+                if safe_len > 0 {
+                    let safe_content = self.thinking_buffer[..safe_len].to_string();
+                    if !safe_content.is_empty() {
+                        outputs.push(self.serialize_reasoning_chunk(&safe_content));
+                        self.thinking_buffer = self.thinking_buffer[safe_len..].to_string();
+                    }
+                }
+                break;
+            } else {
+                if !self.thinking_buffer.is_empty() {
+                    let remaining = std::mem::take(&mut self.thinking_buffer);
+                    outputs.push(self.serialize_content_chunk(&remaining));
+                }
+                break;
+            }
+        }
+
+        outputs
     }
 
     fn process_tool_use_event(&mut self, tool_use: &ToolUseEvent) -> Vec<String> {
@@ -240,11 +428,132 @@ impl OpenAiStreamConverter {
         )]
     }
 
-    fn serialize_chunk(
-        &self,
-        delta: OpenAiChunkDelta,
-        finish_reason: Option<String>,
-    ) -> String {
+    fn flush_pending_assistant_outputs_for_tool_boundary(&mut self) -> Vec<String> {
+        if !self.thinking_enabled || self.thinking_buffer.is_empty() {
+            return Vec::new();
+        }
+
+        if self.in_thinking_block {
+            self.strip_thinking_leading_newline_if_needed();
+
+            let mut outputs = Vec::new();
+            if let Some(end_pos) = find_real_thinking_end_tag_at_buffer_end(&self.thinking_buffer) {
+                let thinking_content = self.thinking_buffer[..end_pos].to_string();
+                if !thinking_content.is_empty() {
+                    outputs.push(self.serialize_reasoning_chunk(&thinking_content));
+                }
+
+                let after_pos = end_pos + THINKING_END_TAG.len();
+                let remaining = self.thinking_buffer[after_pos..].trim_start().to_string();
+                self.thinking_buffer.clear();
+                self.in_thinking_block = false;
+                self.thinking_extracted = true;
+                self.strip_thinking_leading_newline = false;
+
+                if !remaining.is_empty() {
+                    outputs.push(self.serialize_content_chunk(&remaining));
+                }
+            } else {
+                let remaining = std::mem::take(&mut self.thinking_buffer);
+                self.in_thinking_block = false;
+                self.thinking_extracted = true;
+                self.strip_thinking_leading_newline = false;
+                if !remaining.is_empty() {
+                    outputs.push(self.serialize_reasoning_chunk(&remaining));
+                }
+            }
+
+            return outputs;
+        }
+
+        let remaining = std::mem::take(&mut self.thinking_buffer);
+        if remaining.is_empty() {
+            return Vec::new();
+        }
+
+        vec![self.serialize_content_chunk(&remaining)]
+    }
+
+    fn flush_pending_assistant_outputs_for_finish(&mut self) -> Vec<String> {
+        if !self.thinking_enabled || self.thinking_buffer.is_empty() {
+            return Vec::new();
+        }
+
+        if self.in_thinking_block {
+            self.strip_thinking_leading_newline_if_needed();
+
+            let mut outputs = Vec::new();
+            if let Some(end_pos) = find_real_thinking_end_tag_at_buffer_end(&self.thinking_buffer) {
+                let thinking_content = self.thinking_buffer[..end_pos].to_string();
+                if !thinking_content.is_empty() {
+                    outputs.push(self.serialize_reasoning_chunk(&thinking_content));
+                }
+
+                let after_pos = end_pos + THINKING_END_TAG.len();
+                let remaining = self.thinking_buffer[after_pos..].trim_start().to_string();
+                self.thinking_buffer.clear();
+                self.in_thinking_block = false;
+                self.thinking_extracted = true;
+                self.strip_thinking_leading_newline = false;
+
+                if !remaining.is_empty() {
+                    outputs.push(self.serialize_content_chunk(&remaining));
+                }
+            } else {
+                let remaining = std::mem::take(&mut self.thinking_buffer);
+                self.in_thinking_block = false;
+                self.thinking_extracted = true;
+                self.strip_thinking_leading_newline = false;
+                if !remaining.is_empty() {
+                    outputs.push(self.serialize_reasoning_chunk(&remaining));
+                }
+            }
+
+            return outputs;
+        }
+
+        let remaining = std::mem::take(&mut self.thinking_buffer);
+        if remaining.is_empty() {
+            return Vec::new();
+        }
+
+        vec![self.serialize_content_chunk(&remaining)]
+    }
+
+    fn strip_thinking_leading_newline_if_needed(&mut self) {
+        if !self.strip_thinking_leading_newline {
+            return;
+        }
+
+        if self.thinking_buffer.starts_with('\n') {
+            self.thinking_buffer = self.thinking_buffer[1..].to_string();
+            self.strip_thinking_leading_newline = false;
+        } else if !self.thinking_buffer.is_empty() {
+            self.strip_thinking_leading_newline = false;
+        }
+    }
+
+    fn serialize_content_chunk(&self, content: &str) -> String {
+        self.serialize_chunk(
+            OpenAiChunkDelta {
+                content: Some(content.to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+    }
+
+    fn serialize_reasoning_chunk(&self, reasoning: &str) -> String {
+        self.serialize_chunk(
+            OpenAiChunkDelta {
+                reasoning_content: Some(reasoning.to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+    }
+
+    fn serialize_chunk(&self, delta: OpenAiChunkDelta, finish_reason: Option<String>) -> String {
         let chunk = OpenAiChatCompletionChunk {
             id: self.id.clone(),
             object: "chat.completion.chunk".to_string(),
@@ -319,12 +628,14 @@ mod tests {
         ));
 
         assert_eq!(
-            parse_chunk(&text_outputs[0]).choices[0].delta.content.as_deref(),
+            parse_chunk(&text_outputs[0]).choices[0]
+                .delta
+                .content
+                .as_deref(),
             Some("Hello")
         );
         assert_eq!(
-            parse_chunk(&reasoning_outputs[0])
-                .choices[0]
+            parse_chunk(&reasoning_outputs[0]).choices[0]
                 .delta
                 .reasoning_content
                 .as_deref(),
