@@ -14,6 +14,7 @@ use crate::kiro::model::requests::tool::{
 use super::types::{ChatCompletionsRequest, ChatMessage, ToolDefinition};
 
 const DEFAULT_THINKING_BUDGET: i32 = 24_576;
+const KIRO_MODEL_DEEPSEEK_3_2: &str = "deepseek-3.2";
 
 #[derive(Debug)]
 pub enum ConversionError {
@@ -122,7 +123,7 @@ fn map_model(model: &str) -> Option<(String, bool)> {
     let model = model.to_lowercase();
 
     if is_unified_deepseek_model(&model) || model.contains("deepseek-v3") {
-        return Some(("claude-sonnet-4.6".to_string(), true));
+        return Some((KIRO_MODEL_DEEPSEEK_3_2.to_string(), true));
     }
     if model.contains("sonnet") {
         if model.contains("4-6") || model.contains("4.6") {
@@ -518,7 +519,7 @@ mod tests {
                 .current_message
                 .user_input_message
                 .model_id,
-            "claude-sonnet-4.6"
+            "deepseek-3.2"
         );
         assert_eq!(
             kiro_request
@@ -573,7 +574,7 @@ mod tests {
         ] {
             assert_eq!(
                 super::map_model(alias),
-                Some(("claude-sonnet-4.6".to_string(), true)),
+                Some(("deepseek-3.2".to_string(), true)),
                 "alias {alias} should map to the unified deepseek family"
             );
         }

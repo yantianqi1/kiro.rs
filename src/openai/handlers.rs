@@ -519,7 +519,7 @@ mod tests {
         assert_eq!(json["choices"][0]["message"]["content"], "Hello from upstream");
         let request_body = captured_body.lock().unwrap().clone().unwrap();
         assert!(request_body.contains("\"profileArn\":\"arn:aws:test\""));
-        assert!(request_body.contains("\"modelId\":\"claude-sonnet-4.6\""));
+        assert!(request_body.contains("\"modelId\":\"deepseek-3.2\""));
     }
 
     #[tokio::test]
