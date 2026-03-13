@@ -221,12 +221,25 @@ fn estimate_input_tokens(payload: &ChatCompletionsRequest) -> i32 {
 }
 
 fn is_reasoning_enabled(payload: &ChatCompletionsRequest) -> bool {
+    let model_lower = payload.model.to_lowercase();
     payload
         .reasoning_effort
         .as_deref()
         .is_some_and(|effort| !effort.eq_ignore_ascii_case("none"))
-        || payload.model.to_lowercase().contains("reasoner")
-        || payload.model.to_lowercase().contains("thinking")
+        || matches!(
+            model_lower.as_str(),
+            "deepseek-v3.2-exp"
+                | "deepseek-v3-2-exp"
+                | "deepseek-chat"
+                | "deepseek-reasoner"
+                | "deepseek-3-2"
+                | "deepseek-3-2-thinking"
+                | "deepseek-3.2"
+                | "deepseek-3.2-thinking"
+                | "deepseek"
+        )
+        || model_lower.contains("deepseek-r1")
+        || model_lower.contains("thinking")
         || payload.messages.iter().any(|message| {
             let content = message
                 .content
@@ -620,8 +633,9 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(model_ids.contains(&"claude-sonnet-4-6"));
-        assert!(model_ids.contains(&"deepseek-chat"));
-        assert!(model_ids.contains(&"deepseek-reasoner"));
+        assert!(model_ids.contains(&"deepseek-v3.2-exp"));
+        assert!(!model_ids.contains(&"deepseek-chat"));
+        assert!(!model_ids.contains(&"deepseek-reasoner"));
     }
 
     #[tokio::test]

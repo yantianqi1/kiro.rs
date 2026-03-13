@@ -32,6 +32,21 @@ impl std::fmt::Display for ConversionError {
 
 impl std::error::Error for ConversionError {}
 
+fn is_unified_deepseek_model(model: &str) -> bool {
+    matches!(
+        model,
+        "deepseek-v3.2-exp"
+            | "deepseek-v3-2-exp"
+            | "deepseek-chat"
+            | "deepseek-reasoner"
+            | "deepseek-3-2"
+            | "deepseek-3-2-thinking"
+            | "deepseek-3.2"
+            | "deepseek-3.2-thinking"
+            | "deepseek"
+    ) || model.contains("deepseek-r1")
+}
+
 pub fn convert_request(req: &ChatCompletionsRequest) -> Result<KiroRequest, ConversionError> {
     if req.messages.is_empty() {
         return Err(ConversionError::EmptyMessages);
@@ -106,11 +121,8 @@ pub fn convert_request(req: &ChatCompletionsRequest) -> Result<KiroRequest, Conv
 fn map_model(model: &str) -> Option<(String, bool)> {
     let model = model.to_lowercase();
 
-    if model.contains("deepseek-reasoner") || model.contains("deepseek-r1") {
+    if is_unified_deepseek_model(&model) || model.contains("deepseek-v3") {
         return Some(("claude-sonnet-4.6".to_string(), true));
-    }
-    if model.contains("deepseek-chat") || model.contains("deepseek-v3") || model == "deepseek" {
-        return Some(("claude-sonnet-4.6".to_string(), false));
     }
     if model.contains("sonnet") {
         if model.contains("4-6") || model.contains("4.6") {
@@ -486,7 +498,7 @@ mod tests {
     #[test]
     fn deepseek_plain_model_maps_to_kiro_and_inference_config() {
         let request = ChatCompletionsRequest {
-            model: "deepseek-chat".to_string(),
+            model: "deepseek-v3.2-exp".to_string(),
             messages: vec![user_message("Hello from OpenAI")],
             stream: false,
             max_tokens: Some(2048),
@@ -527,6 +539,47 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_public_model_defaults_to_thinking() {
+        let request = ChatCompletionsRequest {
+            model: "deepseek-v3.2-exp".to_string(),
+            messages: vec![user_message("Think carefully about this")],
+            stream: false,
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            reasoning_effort: None,
+        };
+
+        let kiro_request = super::convert_request(&request).unwrap();
+        let KiroMessage::User(system_message) = &kiro_request.conversation_state.history[0] else {
+            panic!("expected synthetic system message");
+        };
+
+        let content = &system_message.user_input_message.content;
+        assert!(content.contains("<thinking_mode>enabled</thinking_mode>"));
+        assert!(content.contains("<max_thinking_length>24576</max_thinking_length>"));
+    }
+
+    #[test]
+    fn deepseek_legacy_aliases_map_to_same_model_and_default_thinking() {
+        for alias in [
+            "deepseek-chat",
+            "deepseek-reasoner",
+            "deepseek-3-2",
+            "deepseek-3-2-thinking",
+        ] {
+            assert_eq!(
+                super::map_model(alias),
+                Some(("claude-sonnet-4.6".to_string(), true)),
+                "alias {alias} should map to the unified deepseek family"
+            );
+        }
+    }
+
+    #[test]
     fn deepseek_reasoning_effort_injects_thinking_tags_once() {
         let request = ChatCompletionsRequest {
             model: "deepseek-reasoner".to_string(),
@@ -555,7 +608,7 @@ mod tests {
     #[test]
     fn assistant_tool_calls_and_tool_results_attach_to_current_user() {
         let request = ChatCompletionsRequest {
-            model: "deepseek-chat".to_string(),
+            model: "deepseek-v3.2-exp".to_string(),
             messages: vec![
                 user_message("Check the weather"),
                 ChatMessage {
@@ -607,9 +660,17 @@ mod tests {
         let kiro_request = super::convert_request(&request).unwrap();
         let history = &kiro_request.conversation_state.history;
 
-        let KiroMessage::Assistant(assistant_message) = &history[1] else {
-            panic!("expected assistant history entry");
-        };
+        let assistant_message = history
+            .iter()
+            .find_map(|message| match message {
+                KiroMessage::Assistant(assistant_message)
+                    if assistant_message.assistant_response_message.tool_uses.is_some() =>
+                {
+                    Some(assistant_message)
+                }
+                _ => None,
+            })
+            .expect("expected assistant history entry with tool uses");
         let tool_uses = assistant_message
             .assistant_response_message
             .tool_uses
@@ -643,7 +704,7 @@ mod tests {
     #[test]
     fn orphaned_tool_results_are_dropped() {
         let request = ChatCompletionsRequest {
-            model: "deepseek-chat".to_string(),
+            model: "deepseek-v3.2-exp".to_string(),
             messages: vec![
                 user_message("Hello"),
                 ChatMessage {

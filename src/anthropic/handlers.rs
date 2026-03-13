@@ -34,6 +34,8 @@ const MODEL_OBJECT: &str = "model";
 const MODEL_TYPE_CHAT: &str = "chat";
 const DEFAULT_MODEL_MAX_TOKENS: i32 = 32000;
 const DEEPSEEK_3_2_CREATED_AT: i64 = 1735689600;
+const UNIFIED_DEEPSEEK_MODEL_ID: &str = "deepseek-v3.2-exp";
+const UNIFIED_DEEPSEEK_DISPLAY_NAME: &str = "DeepSeek V3.2 Exp";
 
 fn create_model(id: &str, created: i64, owned_by: &str, display_name: &str) -> Model {
     Model {
@@ -110,28 +112,10 @@ fn available_models() -> Vec<Model> {
             "Claude Haiku 4.5 (Thinking)",
         ),
         create_model(
-            "deepseek-3-2",
+            UNIFIED_DEEPSEEK_MODEL_ID,
             DEEPSEEK_3_2_CREATED_AT,
             "deepseek",
-            "DeepSeek 3.2",
-        ),
-        create_model(
-            "deepseek-3-2-thinking",
-            DEEPSEEK_3_2_CREATED_AT,
-            "deepseek",
-            "DeepSeek 3.2 (Thinking)",
-        ),
-        create_model(
-            "deepseek-chat",
-            1770314400,
-            "deepseek",
-            "DeepSeek Chat",
-        ),
-        create_model(
-            "deepseek-reasoner",
-            1770314400,
-            "deepseek",
-            "DeepSeek Reasoner",
+            UNIFIED_DEEPSEEK_DISPLAY_NAME,
         ),
     ]
 }
@@ -615,7 +599,18 @@ async fn handle_non_stream_request(
 /// - budget_tokens 固定为 20000
 fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
     let model_lower = payload.model.to_lowercase();
-    if !model_lower.contains("thinking") {
+    let unified_deepseek = matches!(
+        model_lower.as_str(),
+        "deepseek-v3.2-exp"
+            | "deepseek-v3-2-exp"
+            | "deepseek-chat"
+            | "deepseek-reasoner"
+            | "deepseek-3-2"
+            | "deepseek-3-2-thinking"
+            | "deepseek-3.2"
+            | "deepseek-3.2-thinking"
+    );
+    if !unified_deepseek && !model_lower.contains("thinking") {
         return;
     }
 
@@ -666,28 +661,29 @@ mod tests {
         let models = available_models();
         let ids: Vec<_> = models.iter().map(|model| model.id.as_str()).collect();
 
-        assert!(ids.contains(&"deepseek-3-2"));
-        assert!(ids.contains(&"deepseek-3-2-thinking"));
-        assert!(ids.contains(&"deepseek-chat"));
-        assert!(ids.contains(&"deepseek-reasoner"));
+        assert!(ids.contains(&"deepseek-v3.2-exp"));
+        assert!(!ids.contains(&"deepseek-3-2"));
+        assert!(!ids.contains(&"deepseek-3-2-thinking"));
+        assert!(!ids.contains(&"deepseek-chat"));
+        assert!(!ids.contains(&"deepseek-reasoner"));
 
         let deepseek = models
             .iter()
-            .find(|model| model.id == "deepseek-3-2")
-            .expect("deepseek-3-2 should be present");
-        assert_eq!(deepseek.display_name, "DeepSeek 3.2");
+            .find(|model| model.id == "deepseek-v3.2-exp")
+            .expect("deepseek-v3.2-exp should be present");
+        assert_eq!(deepseek.display_name, "DeepSeek V3.2 Exp");
         assert_eq!(deepseek.owned_by, "deepseek");
     }
 
     #[test]
-    fn test_override_thinking_from_deepseek_thinking_model_name() {
-        let mut payload = test_messages_request("deepseek-3-2-thinking");
+    fn test_override_thinking_from_unified_deepseek_model_name() {
+        let mut payload = test_messages_request("deepseek-v3.2-exp");
 
         override_thinking_from_model_name(&mut payload);
 
         let thinking = payload
             .thinking
-            .expect("deepseek thinking variant should enable thinking");
+            .expect("unified deepseek model should enable thinking");
         assert_eq!(thinking.thinking_type, "enabled");
         assert_eq!(thinking.budget_tokens, 20000);
         assert!(payload.output_config.is_none());
@@ -897,10 +893,11 @@ mod model_response_tests {
             .collect::<Vec<_>>();
 
         assert!(model_ids.contains(&"claude-sonnet-4-6"));
-        assert!(model_ids.contains(&"deepseek-3-2"));
-        assert!(model_ids.contains(&"deepseek-3-2-thinking"));
-        assert!(model_ids.contains(&"deepseek-chat"));
-        assert!(model_ids.contains(&"deepseek-reasoner"));
+        assert!(model_ids.contains(&"deepseek-v3.2-exp"));
+        assert!(!model_ids.contains(&"deepseek-3-2"));
+        assert!(!model_ids.contains(&"deepseek-3-2-thinking"));
+        assert!(!model_ids.contains(&"deepseek-chat"));
+        assert!(!model_ids.contains(&"deepseek-reasoner"));
     }
 }
 

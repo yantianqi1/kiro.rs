@@ -161,7 +161,7 @@ curl http://127.0.0.1:8990/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer sk-kiro-rs-qazWSXedcRFV123456" \
   -d '{
-    "model": "deepseek-chat",
+    "model": "deepseek-v3.2-exp",
     "stream": false,
     "messages": [
       {"role": "user", "content": "Reply with exactly OK."}

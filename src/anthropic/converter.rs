@@ -103,7 +103,14 @@ fn strip_thinking_suffix(model: &str) -> &str {
 fn is_deepseek_3_2_alias(model: &str) -> bool {
     matches!(
         model,
-        "deepseek-3-2" | "deepseek-3.2" | "kiro-deepseek-3-2" | "kiro-deepseek-3.2"
+        "deepseek-v3.2-exp"
+            | "deepseek-v3-2-exp"
+            | "deepseek-chat"
+            | "deepseek-reasoner"
+            | "deepseek-3-2"
+            | "deepseek-3.2"
+            | "kiro-deepseek-3-2"
+            | "kiro-deepseek-3.2"
     )
 }
 
@@ -934,7 +941,7 @@ mod tests {
 
     #[test]
     fn test_map_model_deepseek() {
-        let result = map_model("deepseek-3-2");
+        let result = map_model("deepseek-v3.2-exp");
         assert_eq!(result, Some("deepseek-3.2".to_string()));
     }
 
@@ -949,6 +956,14 @@ mod tests {
         assert_eq!(map_model("deepseek-3.2"), Some("deepseek-3.2".to_string()));
         assert_eq!(
             map_model("deepseek-3.2-thinking"),
+            Some("deepseek-3.2".to_string())
+        );
+        assert_eq!(
+            map_model("deepseek-chat"),
+            Some("deepseek-3.2".to_string())
+        );
+        assert_eq!(
+            map_model("deepseek-reasoner"),
             Some("deepseek-3.2".to_string())
         );
         assert_eq!(
