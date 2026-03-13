@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use chrono::Utc;
 use uuid::Uuid;
 
-use crate::anthropic::SseEvent;
+use crate::{
+    anthropic::SseEvent,
+    kiro::model::events::{Event, ToolUseEvent},
+};
 
 use super::response_converter::map_finish_reason;
 use super::types::{
@@ -16,7 +19,9 @@ pub struct OpenAiStreamConverter {
     model: String,
     created: i64,
     tool_call_indices: HashMap<i32, i32>,
+    tool_call_indices_by_id: HashMap<String, i32>,
     next_tool_call_index: i32,
+    final_finish_reason: Option<String>,
 }
 
 impl OpenAiStreamConverter {
@@ -26,8 +31,41 @@ impl OpenAiStreamConverter {
             model: model.into(),
             created: Utc::now().timestamp(),
             tool_call_indices: HashMap::new(),
+            tool_call_indices_by_id: HashMap::new(),
             next_tool_call_index: 0,
+            final_finish_reason: Some("stop".to_string()),
         }
+    }
+
+    pub fn initial_outputs(&self) -> Vec<String> {
+        vec![self.serialize_chunk(
+            OpenAiChunkDelta {
+                role: Some("assistant".to_string()),
+                ..Default::default()
+            },
+            None,
+        )]
+    }
+
+    pub fn process_kiro_event(&mut self, event: &Event) -> Vec<String> {
+        match event {
+            Event::AssistantResponse(resp) => self.process_assistant_response(&resp.content),
+            Event::ToolUse(tool_use) => self.process_tool_use_event(tool_use),
+            Event::Exception { exception_type, .. }
+                if exception_type == "ContentLengthExceededException" =>
+            {
+                self.final_finish_reason = Some("length".to_string());
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    pub fn finish_outputs(&self) -> Vec<String> {
+        vec![
+            self.serialize_chunk(OpenAiChunkDelta::default(), self.final_finish_reason.clone()),
+            "data: [DONE]\n\n".to_string(),
+        ]
     }
 
     pub fn process_sse_event(&mut self, event: &SseEvent) -> Vec<String> {
@@ -139,6 +177,67 @@ impl OpenAiStreamConverter {
             "message_stop" => vec!["data: [DONE]\n\n".to_string()],
             _ => Vec::new(),
         }
+    }
+
+    fn process_assistant_response(&self, content: &str) -> Vec<String> {
+        if content.is_empty() {
+            return Vec::new();
+        }
+
+        vec![self.serialize_chunk(
+            OpenAiChunkDelta {
+                content: Some(content.to_string()),
+                ..Default::default()
+            },
+            None,
+        )]
+    }
+
+    fn process_tool_use_event(&mut self, tool_use: &ToolUseEvent) -> Vec<String> {
+        let mut delta = OpenAiToolCallDelta {
+            index: 0,
+            id: None,
+            tool_type: None,
+            function: None,
+        };
+
+        if let Some(index) = self
+            .tool_call_indices_by_id
+            .get(&tool_use.tool_use_id)
+            .copied()
+        {
+            delta.index = index;
+            if !tool_use.input.is_empty() {
+                delta.function = Some(ToolCallFunction {
+                    name: String::new(),
+                    arguments: tool_use.input.clone(),
+                });
+            }
+        } else {
+            let index = self.next_tool_call_index;
+            self.next_tool_call_index += 1;
+            self.tool_call_indices_by_id
+                .insert(tool_use.tool_use_id.clone(), index);
+            delta.index = index;
+            delta.id = Some(tool_use.tool_use_id.clone());
+            delta.tool_type = Some("function".to_string());
+            delta.function = Some(ToolCallFunction {
+                name: tool_use.name.clone(),
+                arguments: tool_use.input.clone(),
+            });
+        }
+
+        if tool_use.stop {
+            self.final_finish_reason = Some("tool_calls".to_string());
+        }
+
+        vec![self.serialize_chunk(
+            OpenAiChunkDelta {
+                tool_calls: Some(vec![delta]),
+                ..Default::default()
+            },
+            None,
+        )]
     }
 
     fn serialize_chunk(

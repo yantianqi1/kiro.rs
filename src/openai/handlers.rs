@@ -12,7 +12,7 @@ use bytes::Bytes;
 use futures::{Stream, StreamExt, stream};
 
 use crate::{
-    anthropic::{AppState, SseEvent, StreamContext},
+    anthropic::AppState,
     kiro::{model::events::Event, parser::decoder::EventStreamDecoder},
     token,
 };
@@ -128,8 +128,6 @@ where
     let stream = create_openai_sse_stream(
         upstream,
         prepared.model,
-        prepared.input_tokens,
-        prepared.thinking_enabled,
     );
 
     Response::builder()
@@ -271,34 +269,21 @@ fn decode_event_stream_bytes(body_bytes: &[u8]) -> Vec<Event> {
 fn create_openai_sse_stream(
     upstream: ByteStream,
     model: String,
-    input_tokens: i32,
-    thinking_enabled: bool,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
-    let stream_context = StreamContext::new_with_thinking(model.clone(), input_tokens, thinking_enabled);
     let openai_converter = OpenAiStreamConverter::new(model);
 
     stream::unfold(
-        (
-            upstream,
-            EventStreamDecoder::new(),
-            stream_context,
-            openai_converter,
-            false,
-            false,
-        ),
-        |(mut upstream, mut decoder, mut stream_context, mut converter, initial_sent, finished)| async move {
+        (upstream, EventStreamDecoder::new(), openai_converter, false, false),
+        |(mut upstream, mut decoder, mut converter, initial_sent, finished)| async move {
             if finished {
                 return None;
             }
 
             if !initial_sent {
-                let initial_outputs = convert_sse_events(
-                    &mut converter,
-                    stream_context.generate_initial_events(),
-                );
+                let initial_outputs = converter.initial_outputs();
                 return Some((
                     output_stream_from_chunks(initial_outputs),
-                    (upstream, decoder, stream_context, converter, true, false),
+                    (upstream, decoder, converter, true, false),
                 ));
             }
 
@@ -311,54 +296,34 @@ fn create_openai_sse_stream(
                     let mut outputs = Vec::new();
                     for frame in decoder.decode_iter().flatten() {
                         if let Ok(event) = Event::from_frame(frame) {
-                            outputs.extend(convert_sse_events(
-                                &mut converter,
-                                stream_context.process_kiro_event(&event),
-                            ));
+                            outputs.extend(converter.process_kiro_event(&event));
                         }
                     }
 
                     Some((
                         output_stream_from_chunks(outputs),
-                        (upstream, decoder, stream_context, converter, true, false),
+                        (upstream, decoder, converter, true, false),
                     ))
                 }
                 Some(Err(error)) => {
                     tracing::warn!("upstream stream error: {error}");
-                    let final_outputs = convert_sse_events(
-                        &mut converter,
-                        stream_context.generate_final_events(),
-                    );
+                    let final_outputs = converter.finish_outputs();
                     Some((
                         output_stream_from_chunks(final_outputs),
-                        (upstream, decoder, stream_context, converter, true, true),
+                        (upstream, decoder, converter, true, true),
                     ))
                 }
                 None => {
-                    let final_outputs = convert_sse_events(
-                        &mut converter,
-                        stream_context.generate_final_events(),
-                    );
+                    let final_outputs = converter.finish_outputs();
                     Some((
                         output_stream_from_chunks(final_outputs),
-                        (upstream, decoder, stream_context, converter, true, true),
+                        (upstream, decoder, converter, true, true),
                     ))
                 }
             }
         },
     )
     .flatten()
-}
-
-fn convert_sse_events(
-    converter: &mut OpenAiStreamConverter,
-    sse_events: Vec<SseEvent>,
-) -> Vec<String> {
-    let mut outputs = Vec::new();
-    for event in sse_events {
-        outputs.extend(converter.process_sse_event(&event));
-    }
-    outputs
 }
 
 fn output_stream_from_chunks(chunks: Vec<String>) -> OutputStream {
@@ -414,7 +379,7 @@ mod tests {
         response::Response,
     };
     use bytes::Bytes;
-    use futures::stream;
+    use futures::{StreamExt, stream};
 
     use crate::{
         anthropic::AppState,
@@ -482,6 +447,13 @@ mod tests {
             serde_json::json!({ "content": "Hello" }),
         ));
         Bytes::from(frames)
+    }
+
+    fn assistant_response_bytes(content: &str) -> Bytes {
+        Bytes::from(encode_event_frame(
+            "assistantResponseEvent",
+            serde_json::json!({ "content": content }),
+        ))
     }
 
     #[tokio::test]
@@ -554,6 +526,30 @@ mod tests {
         let body_text = String::from_utf8(body.to_vec()).unwrap();
         assert!(body_text.contains("chat.completion.chunk"));
         assert!(body_text.contains("data: [DONE]"));
+    }
+
+    #[tokio::test]
+    async fn thinking_stream_emits_small_assistant_chunks_without_waiting_for_stream_end() {
+        let upstream = stream::iter(vec![
+            Ok::<Bytes, Error>(assistant_response_bytes("a")),
+            Ok::<Bytes, Error>(assistant_response_bytes("b")),
+        ]);
+        let mut output = Box::pin(super::create_openai_sse_stream(
+            Box::pin(upstream),
+            "deepseek-v3.2-exp".to_string(),
+        ));
+
+        let first = output.next().await.unwrap().unwrap();
+        let second = output.next().await.unwrap().unwrap();
+
+        let first_text = String::from_utf8(first.to_vec()).unwrap();
+        let second_text = String::from_utf8(second.to_vec()).unwrap();
+
+        assert!(first_text.contains("\"role\":\"assistant\""));
+        assert!(
+            second_text.contains("\"content\":\"a\""),
+            "expected first upstream assistant chunk to be forwarded immediately, got: {second_text}"
+        );
     }
 
     #[tokio::test]
